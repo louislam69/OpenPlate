@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Linking } from 'react-native';
 import { Banner, Button, Card, ChipGroup, Field, Row, Screen, SectionTitle, Txt } from '../src/components/ui';
-import { DEFAULT_AI_SETTINGS, KEY_OPTIONAL, PROVIDER_NAMES, testProvider } from '../src/lib/ai';
+import { DEFAULT_AI_SETTINGS, KEY_OPTIONAL, PROVIDER_NAMES, serverUrlProblem, testProvider } from '../src/lib/ai';
 import { getApiKey, setApiKey } from '../src/lib/secure';
 import { useStore } from '../src/lib/store';
 import { useColors } from '../src/lib/theme';
@@ -60,10 +60,28 @@ function ProviderCard({ provider, t }: { provider: AIProviderId; t: TFn }) {
   const [key, setKey] = useState('');
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const showUrl = provider === 'local' || provider === 'openai';
+  // Model and address are edited locally and saved when the field is left, not on every keystroke.
+  const [model, setModel] = useState(config.model);
+  const [url, setUrl] = useState(config.baseUrl ?? '');
 
   useEffect(() => {
     getApiKey(provider).then((k) => setSaved(!!k));
   }, [provider]);
+
+  // Leaving the screen while a field is still focused saves it too.
+  const latest = useRef(() => {});
+  latest.current = () => {
+    commit();
+  };
+  useEffect(() => () => latest.current(), []);
+
+  const commit = () => {
+    const next = { model: model.trim() || DEFAULT_AI_SETTINGS.providers[provider].model, baseUrl: url.trim() };
+    if (next.model !== model) setModel(next.model);
+    setProviderConfig(provider, showUrl ? next : { model: next.model });
+    return { ...config, ...(showUrl ? next : { model: next.model }) };
+  };
 
   const saveKey = async () => {
     await setApiKey(provider, key);
@@ -75,8 +93,9 @@ function ProviderCard({ provider, t }: { provider: AIProviderId; t: TFn }) {
     setTesting(true);
     setResult(null);
     try {
+      const current = commit();
       if (key.trim()) await saveKey();
-      const reply = await testProvider(provider, config, await getApiKey(provider));
+      const reply = await testProvider(provider, current, await getApiKey(provider));
       setResult({ ok: true, text: t('ai_test_ok', { reply }) });
     } catch (e) {
       setResult({ ok: false, text: (e as Error).message });
@@ -85,7 +104,8 @@ function ProviderCard({ provider, t }: { provider: AIProviderId; t: TFn }) {
     }
   };
 
-  const showUrl = provider === 'local' || provider === 'openai';
+  // OpenAI falls back to its official address when the field is empty.
+  const urlProblem = showUrl && (url.trim() || provider === 'local') ? serverUrlProblem(url) : null;
 
   return (
     <>
@@ -127,22 +147,32 @@ function ProviderCard({ provider, t }: { provider: AIProviderId; t: TFn }) {
         </Row>
         <Field
           label={t('model')}
-          value={config.model}
-          onChangeText={(model) => setProviderConfig(provider, { model })}
+          value={model}
+          onChangeText={setModel}
+          onEndEditing={commit}
           autoCapitalize="none"
           autoCorrect={false}
           hint={t('model_default', { model: DEFAULT_AI_SETTINGS.providers[provider].model })}
         />
         {showUrl ? (
-          <Field
-            label={t('server_url')}
-            value={config.baseUrl ?? ''}
-            onChangeText={(baseUrl) => setProviderConfig(provider, { baseUrl })}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            hint={provider === 'local' ? t('server_url_hint') : undefined}
-          />
+          <>
+            <Field
+              label={t('server_url')}
+              value={url}
+              onChangeText={setUrl}
+              onEndEditing={commit}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              placeholder={provider === 'openai' ? 'https://api.openai.com/v1' : 'http://192.168.x.x:11434/v1'}
+              hint={provider === 'local' ? t('server_url_hint') : undefined}
+            />
+            {urlProblem ? (
+              <Txt v="small" color={c.danger}>
+                {t(`server_url_${urlProblem}`)}
+              </Txt>
+            ) : null}
+          </>
         ) : null}
         <Button kind="secondary" small icon="pulse" title={t('test_connection')} onPress={test} loading={testing} />
         {result ? (

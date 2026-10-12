@@ -75,6 +75,18 @@ export interface Profile {
   createdAt: number;
 }
 
+/** Profile fields while they are being edited (numbers may still be empty). */
+export interface ProfileDraft {
+  goal: Goal;
+  sex: Sex;
+  birthYear: number | null;
+  heightCm: number | null;
+  startWeightKg: number | null;
+  targetWeightKg: number | null;
+  activity: Activity;
+  paceKgPerWeek: number;
+}
+
 export interface WeightEntry {
   date: string;
   kg: number;
@@ -103,6 +115,20 @@ export interface AISettings {
   providers: Record<AIProviderId, AIProviderConfig>;
   /** Below this confidence the fallback provider is asked as well. */
   minConfidence: number;
+}
+
+/** Everything the app stores on the phone (API keys live separately in the Keychain). */
+export interface PersistedData {
+  profile: Profile | null;
+  language: LanguagePref;
+  entries: DiaryEntry[];
+  customFoods: Food[];
+  recentFoods: Food[];
+  water: Record<string, number>;
+  weights: WeightEntry[];
+  fastingActive: FastingSession | null;
+  fastingHistory: FastingSession[];
+  ai: AISettings;
 }
 
 export interface AIItem {

@@ -45,13 +45,56 @@ export function minimumKcal(sex: Profile['sex']): number {
   return sex === 'male' ? 1500 : 1200;
 }
 
+/** Weight loss and fasting plans are only offered to adults. Only the birth year is known,
+ * so someone counts as an adult from the calendar year they turn 18. */
+export const ADULT_AGE = 18;
+export function isAdult(birthYear: number, now = new Date()): boolean {
+  return ageFromBirthYear(birthYear, now) >= ADULT_AGE;
+}
+
+/** Lowest BMI a weight-loss target may have (WHO lower bound of normal weight). */
+export const MIN_TARGET_BMI = 18.5;
+export function minHealthyWeight(heightCm: number): number {
+  const m = heightCm / 100;
+  return Math.ceil(MIN_TARGET_BMI * m * m * 10) / 10;
+}
+
+/** Accepted body weight range everywhere in the app. */
+export const MIN_WEIGHT_KG = 35;
+export const MAX_WEIGHT_KG = 300;
+export function validWeight(kg: number | null | undefined): kg is number {
+  return typeof kg === 'number' && kg >= MIN_WEIGHT_KG && kg <= MAX_WEIGHT_KG;
+}
+
+/**
+ * Whether the chosen goal is currently applied:
+ * - 'active': deficit or surplus as planned (or 'maintain')
+ * - 'reached': the target weight is reached, so the plan holds the weight
+ * - 'minor': weight loss is not applied for under-18s
+ * - 'underweight': weight loss is not applied below a BMI of 18.5
+ */
+export type GoalStatus = 'active' | 'reached' | 'minor' | 'underweight';
+
+export function goalStatus(p: Profile, weightKg: number, now = new Date()): GoalStatus {
+  if (p.goal === 'lose') {
+    if (!isAdult(p.birthYear, now)) return 'minor';
+    if (bmi(weightKg, p.heightCm) < MIN_TARGET_BMI) return 'underweight';
+    if (weightKg <= p.targetWeightKg) return 'reached';
+  }
+  if (p.goal === 'gain' && weightKg >= p.targetWeightKg) return 'reached';
+  return 'active';
+}
+
 /** Daily calorie goal from profile and current weight, rounded to 10 kcal. */
 export function dailyKcalGoal(p: Profile, weightKg: number, now = new Date()): number {
   const maintenance = tdee(p, weightKg, now);
   const delta = (p.paceKgPerWeek * KCAL_PER_KG_FAT) / 7;
   let goal = maintenance;
-  if (p.goal === 'lose') goal = Math.max(maintenance - delta, minimumKcal(p.sex));
-  if (p.goal === 'gain') goal = maintenance + delta;
+  if (goalStatus(p, weightKg, now) === 'active') {
+    // The floor limits the deficit; it must never push a weight-loss goal above maintenance.
+    if (p.goal === 'lose') goal = Math.min(maintenance, Math.max(maintenance - delta, minimumKcal(p.sex)));
+    if (p.goal === 'gain') goal = maintenance + delta;
+  }
   return Math.round(goal / 10) * 10;
 }
 

@@ -1,13 +1,15 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React from 'react';
-import { Alert, Share, View } from 'react-native';
+import { Alert, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Sprout } from '../../src/components/Sprout';
 import { TAB_BAR_SPACE } from '../../src/components/TabBar';
 import { Card, ChipGroup, Divider, ListRow, Row, Screen, SectionTitle, Txt } from '../../src/components/ui';
 import { PROVIDER_NAMES } from '../../src/lib/ai';
+import { exportBackupFile, importBackupFile } from '../../src/lib/backupFiles';
 import { dayKey } from '../../src/lib/dates';
+import { cancelAllNotifications } from '../../src/lib/device';
 import { foodSubtitle } from '../../src/lib/format';
 import { goalsFor } from '../../src/lib/hooks';
 import { clearAllKeys } from '../../src/lib/secure';
@@ -21,14 +23,28 @@ export default function ProfileScreen() {
   const { t } = useT();
   const c = useColors();
   const state = useStore();
-  const profile = state.profile!;
+  // Briefly null after deleting everything or importing a backup without a profile.
+  if (!state.profile) return null;
+  const profile = state.profile;
   const goals = goalsFor(profile, state.weights, dayKey());
   const chevron = <Ionicons name="chevron-forward" size={18} color={c.sub} />;
 
   const exportData = async () => {
-    const { profile: p, entries, customFoods, water, weights, fastingHistory, ai, language } = useStore.getState();
-    const data = { app: 'OpenPlate', exportedAt: new Date().toISOString(), profile: p, language, entries, customFoods, water, weights, fastingHistory, ai };
-    await Share.share({ message: JSON.stringify(data, null, 2), title: 'openplate-export.json' });
+    try {
+      await exportBackupFile(t);
+    } catch (e) {
+      Alert.alert(t('error'), (e as Error).message);
+    }
+  };
+
+  const importData = async () => {
+    try {
+      if (await importBackupFile(t)) {
+        if (!useStore.getState().profile) router.replace('/onboarding');
+      }
+    } catch (e) {
+      Alert.alert(t('error'), (e as Error).message);
+    }
   };
 
   const resetAll = () =>
@@ -38,6 +54,8 @@ export default function ProfileScreen() {
         text: t('delete_all'),
         style: 'destructive',
         onPress: async () => {
+          // Also cancel a pending "fast finished" reminder, which would otherwise still fire.
+          await cancelAllNotifications();
           await clearAllKeys();
           useStore.getState().resetAll();
           router.replace('/onboarding');
@@ -114,6 +132,8 @@ export default function ProfileScreen() {
       <SectionTitle>{t('data')}</SectionTitle>
       <Card>
         <ListRow icon="share-outline" title={t('export_data')} subtitle={t('export_data_sub')} onPress={exportData} />
+        <Divider />
+        <ListRow icon="download-outline" title={t('import_data')} subtitle={t('import_data_sub')} onPress={importData} />
         <Divider />
         <ListRow icon="trash-outline" title={t('delete_all')} onPress={resetAll} />
       </Card>

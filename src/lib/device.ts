@@ -69,6 +69,15 @@ export async function cancelNotification(id?: string) {
   }
 }
 
+/** All reminders this app scheduled (used when all data is deleted). */
+export async function cancelAllNotifications() {
+  try {
+    await Notifications.cancelAllScheduledNotificationsAsync();
+  } catch {
+    /* ignore */
+  }
+}
+
 /* ---------- Steps (iPhone motion coprocessor; keeps about 7 days) ---------- */
 
 export async function stepsForDay(dateKey: string): Promise<number | null> {

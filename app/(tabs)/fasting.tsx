@@ -7,11 +7,20 @@ import { Ring } from '../../src/components/Ring';
 import { Sprout } from '../../src/components/Sprout';
 import { TAB_BAR_SPACE } from '../../src/components/TabBar';
 import { Banner, Button, Card, Chip, Divider, ListRow, Row, Screen, SectionTitle, Txt } from '../../src/components/ui';
-import { dayKey, formatDuration, formatShortDate, formatTime, locale, weekdayOf } from '../../src/lib/dates';
+import { dayKey, formatDuration, formatShortDate, formatTime, locale } from '../../src/lib/dates';
 import { cancelNotification, scheduleAt } from '../../src/lib/device';
-import { completedFasts, FASTING_PLANS, longestFastHours, planById, sessionHours, stageFor } from '../../src/lib/fasting';
+import {
+  activeFastingDays,
+  completedFasts,
+  FASTING_PLANS,
+  isFastingDay,
+  longestFastHours,
+  planById,
+  sessionHours,
+  stageFor,
+} from '../../src/lib/fasting';
 import { useNow } from '../../src/lib/hooks';
-import { fastingDayKcal } from '../../src/lib/nutrition';
+import { fastingDayKcal, isAdult } from '../../src/lib/nutrition';
 import { useStore } from '../../src/lib/store';
 import { useColors } from '../../src/lib/theme';
 import { useT } from '../../src/lib/useT';
@@ -33,6 +42,7 @@ export default function FastingScreen() {
   const now = useNow(1000);
 
   const plan = planById(profile.fastingPlanId);
+  const adult = isAdult(profile.birthYear);
   const targetHours = active?.targetHours ?? plan.fastHours ?? 16;
 
   const notify = (start: number, hours: number) =>
@@ -70,38 +80,62 @@ export default function FastingScreen() {
 
   const weekdayName = (d: number) => new Date(2024, 0, 7 + d).toLocaleDateString(locale(lang), { weekday: 'short' });
 
+  const selectedDays = activeFastingDays(profile);
   const toggleDay = (d: number) => {
-    const days = profile.fastingDays.includes(d) ? profile.fastingDays.filter((x) => x !== d) : [...profile.fastingDays, d];
-    const limit = plan.fastDays ?? 2;
-    updateProfile({ fastingDays: days.slice(-limit) });
+    const days = selectedDays.includes(d) ? selectedDays.filter((x) => x !== d) : [...selectedDays, d];
+    updateProfile({ fastingDays: activeFastingDays({ fastingPlanId: plan.id, fastingDays: days }) });
+  };
+
+  const choosePlan = (id: string) => {
+    if (active) {
+      Alert.alert(t('plan_locked'), t('plan_locked_text'));
+      return;
+    }
+    // Switching e.g. from 5:2 to 6:1 keeps only as many fasting days as the new plan allows.
+    const next = planById(id);
+    updateProfile({
+      fastingPlanId: id,
+      ...(next.kind === 'weekly' ? { fastingDays: activeFastingDays({ fastingPlanId: id, fastingDays: profile.fastingDays }) } : {}),
+    });
   };
 
   const elapsedMs = active ? now - active.start : 0;
   const progress = active ? elapsedMs / (active.targetHours * 3600000) : 0;
   const remainingMs = active ? active.start + active.targetHours * 3600000 - now : 0;
   const stage = stageFor(elapsedMs / 3600000);
-  const todayIsFastDay = plan.kind === 'weekly' && profile.fastingDays.includes(weekdayOf(dayKey()));
+  const todayIsFastDay = isFastingDay(profile, dayKey());
+
+  // Fasting plans are for adults only. A fast that is already running can still be ended.
+  if (!adult && !active) {
+    return (
+      <Screen style={{ paddingTop: insets.top + 12 }} bottomInset={TAB_BAR_SPACE}>
+        <Txt v="title">{t('tab_fasting')}</Txt>
+        <Card r="xl" style={{ alignItems: 'center', gap: 12, paddingVertical: 24 }}>
+          <Sprout size={96} mood="sleepy" />
+          <Txt v="h2" center>
+            {t('fasting_adults_title')}
+          </Txt>
+          <Txt v="sub" center>
+            {t('fasting_adults_text')}
+          </Txt>
+        </Card>
+      </Screen>
+    );
+  }
 
   return (
     <Screen style={{ paddingTop: insets.top + 12 }} bottomInset={TAB_BAR_SPACE}>
       <Txt v="title">{t('tab_fasting')}</Txt>
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-        {FASTING_PLANS.map((p) => (
-          <Chip
-            key={p.id}
-            label={p.id}
-            selected={p.id === plan.id}
-            onPress={() => {
-              if (active) {
-                Alert.alert(t('plan_locked'), t('plan_locked_text'));
-                return;
-              }
-              updateProfile({ fastingPlanId: p.id });
-            }}
-          />
-        ))}
-      </ScrollView>
+      {adult ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+          {FASTING_PLANS.map((p) => (
+            <Chip key={p.id} label={p.id} selected={p.id === plan.id} onPress={() => choosePlan(p.id)} />
+          ))}
+        </ScrollView>
+      ) : (
+        <Banner icon="information-circle" text={t('fasting_adults_text')} />
+      )}
       <Txt v="sub">
         {plan.kind === 'daily'
           ? t('plan_daily_desc', { fast: plan.fastHours!, eat: 24 - plan.fastHours! })
@@ -173,12 +207,12 @@ export default function FastingScreen() {
         </Card>
       ) : null}
 
-      {plan.kind === 'weekly' ? (
+      {plan.kind === 'weekly' && adult ? (
         <Card style={{ gap: 12 }}>
           <Txt v="h3">{t('fasting_days')}</Txt>
           <Row gap={6} style={{ flexWrap: 'wrap' }}>
             {WEEK_ORDER.map((d) => (
-              <Chip key={d} label={weekdayName(d)} selected={profile.fastingDays.includes(d)} onPress={() => toggleDay(d)} />
+              <Chip key={d} label={weekdayName(d)} selected={selectedDays.includes(d)} onPress={() => toggleDay(d)} />
             ))}
           </Row>
           <Txt v="small">{t('fasting_days_hint', { n: plan.fastDays! })}</Txt>

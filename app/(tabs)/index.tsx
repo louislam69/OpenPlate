@@ -1,15 +1,15 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PlateRing } from '../../src/components/PlateRing';
 import { TAB_BAR_SPACE } from '../../src/components/TabBar';
 import { Banner, Button, Card, Divider, IconButton, ListRow, MacroBar, Row, Screen, SectionTitle, Tile, Txt, type IconName } from '../../src/components/ui';
-import { addDays, dayKey, formatDuration, formatShortDate } from '../../src/lib/dates';
+import { addDays, formatDuration, formatShortDate } from '../../src/lib/dates';
 import { amountText } from '../../src/lib/format';
-import { goalsFor, useNow, useSteps } from '../../src/lib/hooks';
+import { goalsFor, useNow, useSteps, useToday } from '../../src/lib/hooks';
 import { entryNutrients, MEAL_SHARE, sumEntries } from '../../src/lib/nutrition';
 import { useStore } from '../../src/lib/store';
 import { radius, useColors } from '../../src/lib/theme';
@@ -27,8 +27,16 @@ export default function DiaryScreen() {
   const insets = useSafeAreaInsets();
   const c = useColors();
   const { t, lang } = useT();
-  const today = dayKey();
+  const today = useToday();
   const [date, setDate] = useState(today);
+  // When the day changes while the diary shows "today", follow it so food is not logged to yesterday.
+  const prevToday = useRef(today);
+  useEffect(() => {
+    if (prevToday.current === today) return;
+    const before = prevToday.current;
+    prevToday.current = today;
+    setDate((d) => (d === before || d > today ? today : d));
+  }, [today]);
 
   const profile = useStore((s) => s.profile)!;
   const weights = useStore((s) => s.weights);
@@ -66,7 +74,8 @@ export default function DiaryScreen() {
           icon="chevron-forward"
           size={18}
           label={t('next_day')}
-          onPress={() => setDate(addDays(date, 1))}
+          onPress={() => date < today && setDate(addDays(date, 1))}
+          disabled={date >= today}
           color={date >= today ? c.line : c.text}
         />
       </Row>
@@ -101,6 +110,9 @@ export default function DiaryScreen() {
         </Row>
       </Card>
 
+      {goals.status !== 'active' ? (
+        <Banner icon={goals.status === 'reached' ? 'trophy' : 'information-circle'} tone="leaf" text={t(`goal_status_${goals.status}`)} />
+      ) : null}
       {goals.fastDay ? <Banner icon="leaf" tone="leaf" text={t('fasting_day_banner', { kcal: goals.kcal })} /> : null}
       {fastingActive && date === today ? <FastingMini start={fastingActive.start} target={fastingActive.targetHours} /> : null}
 

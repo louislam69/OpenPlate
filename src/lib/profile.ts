@@ -1,6 +1,5 @@
-import type { ProfileDraft } from '../components/ProfileFields';
 import { defaultWaterGoal, MACRO_PRESETS } from './nutrition';
-import type { Profile } from './types';
+import type { Profile, ProfileDraft } from './types';
 
 export function buildProfile(d: ProfileDraft, base?: Partial<Profile>): Profile {
   const weight = d.startWeightKg!;

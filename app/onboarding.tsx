@@ -1,10 +1,11 @@
 import { router } from 'expo-router';
 import React, { useState } from 'react';
-import { View } from 'react-native';
+import { Alert, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ActivityField, BodyFields, GoalField, WeightFields, draftErrors, type ProfileDraft } from '../src/components/ProfileFields';
 import { Sprout } from '../src/components/Sprout';
 import { Button, Card, ChipGroup, Field, Row, Screen, Txt } from '../src/components/ui';
+import { importBackupFile } from '../src/lib/backupFiles';
 import { dayKey } from '../src/lib/dates';
 import { bmi, dailyKcalGoal, macroGrams } from '../src/lib/nutrition';
 import { buildProfile } from '../src/lib/profile';
@@ -85,6 +86,20 @@ export default function Onboarding() {
             ]}
             value={language}
             onChange={setLanguage}
+          />
+          <Button
+            small
+            kind="ghost"
+            icon="download-outline"
+            title={t('restore_backup')}
+            style={{ alignSelf: 'flex-start', paddingHorizontal: 0 }}
+            onPress={async () => {
+              try {
+                if ((await importBackupFile(t)) && useStore.getState().profile) router.replace('/');
+              } catch (e) {
+                Alert.alert(t('error'), (e as Error).message);
+              }
+            }}
           />
         </View>
       ) : null}

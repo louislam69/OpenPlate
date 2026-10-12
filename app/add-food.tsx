@@ -8,7 +8,7 @@ import { dayKey } from '../src/lib/dates';
 import { putFood } from '../src/lib/foodCache';
 import { foodSubtitle } from '../src/lib/format';
 import { searchGeneric } from '../src/lib/genericFoods';
-import { searchOFF } from '../src/lib/openFoodFacts';
+import { HttpError, isBarcode, lookupBarcode, RateLimitedError, searchOFF } from '../src/lib/openFoodFacts';
 import { useStore } from '../src/lib/store';
 import { useColors } from '../src/lib/theme';
 import { MEALS, type Food, type MealType } from '../src/lib/types';
@@ -25,8 +25,11 @@ export default function AddFoodScreen() {
 
   const [query, setQuery] = useState('');
   const [remote, setRemote] = useState<Food[]>([]);
+  /** The query the product results belong to; products are only searched on submit. */
+  const [searched, setSearched] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [missingCode, setMissingCode] = useState<string | null>(null);
   const requestId = useRef(0);
 
   const q = query.trim();
@@ -40,35 +43,45 @@ export default function AddFoodScreen() {
     return [...mine.slice(0, 6), ...generic];
   }, [q, custom, recent, lang]);
 
+  // Typing only filters local foods; a new query hides the products found for the previous one.
   useEffect(() => {
-    if (q.length < 2) {
-      setRemote([]);
-      setLoading(false);
-      setError(null);
-      return;
-    }
-    const id = ++requestId.current;
-    setLoading(true);
     setError(null);
-    const timer = setTimeout(async () => {
-      try {
-        const res = /^\d{8,14}$/.test(q) ? [] : await searchOFF(q, lang);
-        if (id === requestId.current) setRemote(res.filter((r) => !local.some((l) => l.id === r.id)));
-      } catch {
-        if (id === requestId.current) setError(t('search_failed'));
-      } finally {
-        if (id === requestId.current) setLoading(false);
-      }
-    }, 450);
-    return () => clearTimeout(timer);
-    // local is derived from q; leaving it out avoids refetching on every keystroke
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, lang]);
+    setMissingCode(null);
+  }, [q]);
 
   const open = (f: Food) => {
     putFood(f);
     router.push({ pathname: '/food', params: { fid: f.id, meal, date } });
   };
+
+  const submit = async () => {
+    if (q.length < 2 || loading) return;
+    const id = ++requestId.current;
+    setLoading(true);
+    setError(null);
+    setMissingCode(null);
+    try {
+      if (isBarcode(q)) {
+        // A barcode typed by hand: look up the product directly instead of searching text.
+        const code = q.replace(/\D/g, '');
+        const food = custom.find((f) => f.barcode === code) ?? (await lookupBarcode(code, lang));
+        if (id !== requestId.current) return;
+        if (food) open(food);
+        else setMissingCode(code);
+        return;
+      }
+      const res = await searchOFF(q, lang);
+      if (id !== requestId.current) return;
+      setRemote(res.filter((r) => !local.some((l) => l.id === r.id)));
+      setSearched(q);
+    } catch (e) {
+      if (id === requestId.current) setError(e instanceof RateLimitedError || (e instanceof HttpError && e.status === 429) ? t('search_rate_limited') : t('search_failed'));
+    } finally {
+      if (id === requestId.current) setLoading(false);
+    }
+  };
+
+  const showProducts = searched === q;
 
   const renderFood = (f: Food) => (
     <ListRow
@@ -87,6 +100,7 @@ export default function AddFoodScreen() {
         placeholder={t('search_placeholder')}
         value={query}
         onChangeText={setQuery}
+        onSubmitEditing={submit}
         autoCorrect={false}
         returnKeyType="search"
         clearButtonMode="while-editing"
@@ -104,8 +118,27 @@ export default function AddFoodScreen() {
           {local.length > 0 ? <Card>{local.map(renderFood)}</Card> : null}
           <SectionTitle right={loading ? <ActivityIndicator color={c.accent} /> : undefined}>{t('products')}</SectionTitle>
           {error ? <Txt v="sub">{error}</Txt> : null}
-          {!loading && !error && remote.length === 0 && q.length >= 2 ? <Txt v="sub">{t('no_results')}</Txt> : null}
-          {remote.length > 0 ? <Card>{remote.map(renderFood)}</Card> : null}
+          {missingCode ? (
+            <Card>
+              <ListRow
+                title={t('not_found_text', { code: missingCode })}
+                subtitle={t('create_food')}
+                onPress={() => router.push({ pathname: '/custom-food', params: { meal, date, barcode: missingCode } })}
+                right={<Ionicons name="create-outline" size={22} color={c.accent} />}
+              />
+            </Card>
+          ) : null}
+          {!showProducts && !missingCode && q.length >= 2 ? (
+            <Card>
+              <ListRow
+                title={isBarcode(q) ? t('lookup_barcode', { code: q }) : t('search_products_for', { q })}
+                onPress={submit}
+                right={<Ionicons name="search" size={22} color={c.accent} />}
+              />
+            </Card>
+          ) : null}
+          {showProducts && !loading && !error && remote.length === 0 ? <Txt v="sub">{t('no_results')}</Txt> : null}
+          {showProducts && remote.length > 0 ? <Card>{remote.map(renderFood)}</Card> : null}
           <Txt v="small">{t('off_attribution')}</Txt>
         </>
       ) : (

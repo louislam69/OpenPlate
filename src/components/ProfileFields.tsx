@@ -1,19 +1,11 @@
 import React from 'react';
 import { View } from 'react-native';
-import type { Activity, Goal, Sex } from '../lib/types';
+import type { Activity, Goal, ProfileDraft } from '../lib/types';
 import type { TFn } from '../lib/useT';
+import { draftProblem } from '../lib/validation';
 import { ChipGroup, NumField, Row, Txt } from './ui';
 
-export interface ProfileDraft {
-  goal: Goal;
-  sex: Sex;
-  birthYear: number | null;
-  heightCm: number | null;
-  startWeightKg: number | null;
-  targetWeightKg: number | null;
-  activity: Activity;
-  paceKgPerWeek: number;
-}
+export type { ProfileDraft };
 
 export const ACTIVITIES: Activity[] = ['sedentary', 'light', 'moderate', 'active', 'very_active'];
 export const PACES = [0.25, 0.5, 0.75, 1];
@@ -89,12 +81,10 @@ export function ActivityField({ draft, set, t }: Props) {
 }
 
 export function draftErrors(d: ProfileDraft, t: TFn): string | null {
-  const year = new Date().getFullYear();
-  if (!d.birthYear || d.birthYear < year - 100 || d.birthYear > year - 13) return t('err_birth_year');
-  if (!d.heightCm || d.heightCm < 120 || d.heightCm > 230) return t('err_height');
-  if (!d.startWeightKg || d.startWeightKg < 35 || d.startWeightKg > 300) return t('err_weight');
-  if (d.goal !== 'maintain' && (!d.targetWeightKg || d.targetWeightKg < 35 || d.targetWeightKg > 300)) return t('err_weight');
-  if (d.goal === 'lose' && d.targetWeightKg! >= d.startWeightKg) return t('err_target_lose');
-  if (d.goal === 'gain' && d.targetWeightKg! <= d.startWeightKg) return t('err_target_gain');
-  return null;
+  const problem = draftProblem(d);
+  if (!problem) return null;
+  const params = problem.params?.kg !== undefined ? { ...problem.params, kg: fmtKg(Number(problem.params.kg), t) } : problem.params;
+  return t(problem.key, params);
 }
+
+const fmtKg = (kg: number, t: TFn) => String(kg).replace('.', t('decimal_sep'));

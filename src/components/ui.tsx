@@ -14,6 +14,7 @@ import {
   ViewStyle,
 } from 'react-native';
 import { fonts, radius, space, useColors } from '../lib/theme';
+import { useT } from '../lib/useT';
 
 export type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -172,6 +173,7 @@ export function IconButton({
   bg,
   label,
   border,
+  disabled,
 }: {
   icon: IconName;
   onPress: () => void;
@@ -180,13 +182,16 @@ export function IconButton({
   bg?: string;
   label: string;
   border?: string;
+  disabled?: boolean;
 }) {
   const c = useColors();
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
       accessibilityLabel={label}
       accessibilityRole="button"
+      accessibilityState={{ disabled: !!disabled }}
       hitSlop={8}
       style={({ pressed }) => ({
         width: size + 20,
@@ -283,10 +288,15 @@ export function NumField({
   decimals?: boolean;
   hint?: string;
 }) {
-  const [text, setText] = React.useState(value === null || Number.isNaN(value) ? '' : String(value).replace('.', ','));
+  // Show numbers with the app language's decimal separator (72.5 in English, 72,5 in German);
+  // parseNum accepts both while typing.
+  const { t } = useT();
+  const sep = t('decimal_sep');
+  const show = (v: number | null) => (v === null || Number.isNaN(v) ? '' : String(v).replace('.', sep));
+  const [text, setText] = React.useState(() => show(value));
   React.useEffect(() => {
     const parsed = parseNum(text);
-    if (value !== parsed) setText(value === null || Number.isNaN(value) ? '' : String(value).replace('.', ','));
+    if (value !== parsed) setText(show(value));
     // only react to outside changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);

@@ -1,9 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEffect, useState } from 'react';
 import { create } from 'zustand';
-import { createJSONStorage, persist } from 'zustand/middleware';
+import { persist } from 'zustand/middleware';
 import { DEFAULT_AI_SETTINGS } from './ai';
+import type { Backup } from './backup';
 import { newId } from './id';
+import { migrateState, STORE_VERSION } from './migrations';
+import { createShardedStorage } from './persistStorage';
 import type {
   AIProviderConfig,
   AIProviderId,
@@ -13,24 +16,15 @@ import type {
   Food,
   LanguagePref,
   MealType,
+  PersistedData,
   Profile,
-  WeightEntry,
 } from './types';
 
 const MAX_RECENT = 40;
 
-interface State {
-  profile: Profile | null;
-  language: LanguagePref;
-  entries: DiaryEntry[];
-  customFoods: Food[];
-  recentFoods: Food[];
-  water: Record<string, number>;
-  weights: WeightEntry[];
-  fastingActive: FastingSession | null;
-  fastingHistory: FastingSession[];
-  ai: AISettings;
+type PersistedState = PersistedData;
 
+interface State extends PersistedData {
   setProfile: (p: Profile) => void;
   updateProfile: (patch: Partial<Profile>) => void;
   setLanguage: (l: LanguagePref) => void;
@@ -50,9 +44,11 @@ interface State {
   setAI: (patch: Partial<AISettings>) => void;
   setProviderConfig: (id: AIProviderId, patch: Partial<AIProviderConfig>) => void;
   resetAll: () => void;
+  /** Replaces all data with a backup (see backup.ts). */
+  importBackup: (b: Backup) => void;
 }
 
-const initial = {
+const initial: PersistedData = {
   profile: null,
   language: 'system' as LanguagePref,
   entries: [],
@@ -119,12 +115,25 @@ export const useStore = create<State>()(
         set((s) => ({ ai: { ...s.ai, providers: { ...s.ai.providers, [id]: { ...s.ai.providers[id], ...patch } } } })),
 
       resetAll: () => set({ ...initial }),
+      importBackup: (b) =>
+        set((s) => ({
+          ...initial,
+          ...b,
+          ai: { ...s.ai, ...b.ai, providers: { ...s.ai.providers, ...(b.ai?.providers ?? {}) } },
+          // A fast running on the old phone would never notify here; start fresh.
+          fastingActive: null,
+        })),
     }),
     {
+      // The key keeps its old name so existing data is found; the layout is versioned below.
       name: 'openplate-v1',
-      version: 1,
-      storage: createJSONStorage(() => AsyncStorage),
-      partialize: (s) => ({
+      version: STORE_VERSION,
+      migrate: (persisted, version) => migrateState(persisted, version) as unknown as PersistedState,
+      storage: createShardedStorage<PersistedState>(AsyncStorage),
+      onRehydrateStorage: () => (_state, error) => {
+        if (error) setHydrationError(error);
+      },
+      partialize: (s): PersistedState => ({
         profile: s.profile,
         language: s.language,
         entries: s.entries,
@@ -152,22 +161,37 @@ export const useStore = create<State>()(
   ),
 );
 
-export function useHydrated(): boolean {
-  const [hydrated, setHydrated] = useState(() => useStore.persist.hasHydrated());
-  useEffect(() => {
-    const unsub = useStore.persist.onFinishHydration(() => setHydrated(true));
-    setHydrated(useStore.persist.hasHydrated());
-    return unsub;
-  }, []);
-  return hydrated;
+/* ---------- Hydration status ---------- */
+
+let hydrationError: unknown = null;
+const errorListeners = new Set<() => void>();
+function setHydrationError(e: unknown) {
+  hydrationError = e;
+  errorListeners.forEach((l) => l());
 }
 
-/** Latest logged weight on or before the given day, else the start weight. */
-export function weightOn(weights: WeightEntry[], profile: Profile, date: string): number {
-  let kg = profile.startWeightKg;
-  for (const w of weights) {
-    if (w.date <= date) kg = w.kg;
-    else break;
-  }
-  return kg;
+export type HydrationStatus = 'loading' | 'ready' | 'error';
+
+/** 'error' when the stored data could not be read; the app then shows a message instead of a blank screen. */
+export function useHydration(): { status: HydrationStatus; error: unknown; retry: () => void } {
+  const read = (): HydrationStatus => (useStore.persist.hasHydrated() ? 'ready' : hydrationError ? 'error' : 'loading');
+  const [status, setStatus] = useState<HydrationStatus>(read);
+  useEffect(() => {
+    const update = () => setStatus(read());
+    const unsub = useStore.persist.onFinishHydration(update);
+    errorListeners.add(update);
+    update();
+    return () => {
+      unsub();
+      errorListeners.delete(update);
+    };
+  }, []);
+  const retry = () => {
+    hydrationError = null;
+    setStatus('loading');
+    void useStore.persist.rehydrate();
+  };
+  return { status, error: hydrationError, retry };
 }
+
+export { weightOn } from './goals';

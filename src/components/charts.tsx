@@ -70,16 +70,15 @@ export function BarChart({
   bars,
   width,
   height = 150,
-  goal,
 }: {
-  bars: { label: string; value: number }[];
+  /** `goal` is that day's own calorie goal (fasting days and weight changes make it differ). */
+  bars: { label: string; value: number; goal?: number }[];
   width: number;
   height?: number;
-  goal?: number;
 }) {
   const c = useColors();
   if (width <= 0 || bars.length === 0) return <View style={{ height }} />;
-  const max = Math.max(goal ?? 0, ...bars.map((b) => b.value), 1) * 1.1;
+  const max = Math.max(...bars.map((b) => Math.max(b.value, b.goal ?? 0)), 1) * 1.1;
   const padB = 20;
   const h = height - padB;
   const slot = width / bars.length;
@@ -88,7 +87,7 @@ export function BarChart({
   return (
     <Svg width={width} height={height}>
       {bars.map((b, i) => {
-        const over = goal !== undefined && b.value > goal;
+        const over = b.goal !== undefined && b.value > b.goal;
         return (
           <React.Fragment key={i}>
             <Rect
@@ -99,13 +98,23 @@ export function BarChart({
               rx={6}
               fill={over ? c.coral : c.accent}
             />
+            {b.goal !== undefined ? (
+              <Line
+                x1={i * slot + slot * 0.08}
+                x2={(i + 1) * slot - slot * 0.08}
+                y1={y(b.goal)}
+                y2={y(b.goal)}
+                stroke={c.sub}
+                strokeWidth={1.5}
+                strokeDasharray="4 3"
+              />
+            ) : null}
             <SvgText x={i * slot + slot / 2} y={height - 5} fontSize={10} fill={c.sub} textAnchor="middle">
               {b.label}
             </SvgText>
           </React.Fragment>
         );
       })}
-      {goal !== undefined ? <Line x1={0} x2={width} y1={y(goal)} y2={y(goal)} stroke={c.sub} strokeWidth={1} strokeDasharray="4 4" /> : null}
     </Svg>
   );
 }

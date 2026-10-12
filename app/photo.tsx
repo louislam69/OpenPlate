@@ -1,11 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, TextInput, View } from 'react-native';
 import { Sprout } from '../src/components/Sprout';
 import { Banner, Button, Card, ChipGroup, Divider, Field, NumField, Row, Screen, Txt } from '../src/components/ui';
-import { analyzeMeal, PROVIDER_NAMES, providerOrder, type AnalyzeOutcome } from '../src/lib/ai';
+import { analyzeMeal, CANCELLED, PROVIDER_NAMES, providerOrder, type AnalyzeOutcome } from '../src/lib/ai';
 import { dayKey } from '../src/lib/dates';
 import { pickMealPhoto, type PreparedPhoto } from '../src/lib/device';
 import { newId } from '../src/lib/id';
@@ -45,19 +45,33 @@ export default function PhotoScreen() {
 
   const configured = providerOrder(ai).length > 0;
 
+  // Leaving the screen cancels a running analysis, so it does not keep costing API tokens.
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => () => request.current?.abort(), []);
+
   const run = async (p: PreparedPhoto) => {
+    request.current?.abort();
+    const ctrl = new AbortController();
+    request.current = ctrl;
     setPhase('analyzing');
     setError('');
     try {
-      const res = await analyzeMeal(p.base64, ai, getApiKey, lang, hint);
+      const res = await analyzeMeal(p.base64, ai, getApiKey, lang, hint, undefined, ctrl.signal);
+      if (ctrl.signal.aborted) return;
       setOutcome(res);
       setItems(res.result.items.map((it) => ({ key: newId(), base: it, name: it.name, grams: it.grams, include: true })));
       setPhase(res.result.items.length ? 'review' : 'error');
       if (!res.result.items.length) setError(res.result.notes ?? t('ai_no_food'));
     } catch (e) {
+      if (ctrl.signal.aborted || (e as Error).message === CANCELLED) return;
       setError((e as Error).message);
       setPhase('error');
     }
+  };
+
+  const cancel = () => {
+    request.current?.abort();
+    setPhase('pick');
   };
 
   const choose = async (source: 'camera' | 'library') => {
@@ -78,8 +92,8 @@ export default function PhotoScreen() {
   };
   const total = items.filter((i) => i.include).reduce((s, i) => s + scaled(i).kcal, 0);
 
+  const chosen = items.filter((i) => i.include && i.grams && i.grams > 0 && i.name.trim());
   const addAll = () => {
-    const chosen = items.filter((i) => i.include && i.grams && i.grams > 0 && i.name.trim());
     if (!chosen.length) return;
     for (const it of chosen) {
       const food: Food = {
@@ -142,6 +156,7 @@ export default function PhotoScreen() {
           <ActivityIndicator size="large" color={c.accent} />
           <Txt v="h3">{t('analyzing')}</Txt>
           <Txt v="small">{providerOrder(ai).map((p) => PROVIDER_NAMES[p]).join(' → ')}</Txt>
+          <Button small kind="ghost" title={t('cancel')} onPress={cancel} />
         </Card>
       ) : null}
 
@@ -211,7 +226,7 @@ export default function PhotoScreen() {
 
           <Txt v="h3">{t('meal')}</Txt>
           <ChipGroup options={MEALS.map((m) => ({ value: m, label: t(`meal_${m}`) }))} value={meal} onChange={setMeal} />
-          <Button title={t('add_to_diary')} icon="add" onPress={addAll} disabled={!items.some((i) => i.include)} />
+          <Button title={t('add_to_diary')} icon="add" onPress={addAll} disabled={!chosen.length} />
           <Button kind="ghost" title={t('new_photo')} icon="camera" onPress={() => setPhase('pick')} />
           <Txt v="small">{t('ai_estimate_note')}</Txt>
         </>

@@ -2,14 +2,41 @@
 // Run: npx tsc -p tests/tsconfig.json && node --test .test-build/tests/logic.test.js
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { analyzeMeal, buildMealPrompt, callProvider, parseMealJson, providerOrder, DEFAULT_AI_SETTINGS } from '../src/lib/ai';
+import {
+  analyzeMeal,
+  buildMealPrompt,
+  callProvider,
+  CANCELLED,
+  isPrivateHost,
+  parseMealJson,
+  providerOrder,
+  serverUrlProblem,
+  DEFAULT_AI_SETTINGS,
+} from '../src/lib/ai';
+import { BackupError, makeBackup, parseBackup } from '../src/lib/backup';
 import { addDays, dayKey, lastNDays, weekdayOf } from '../src/lib/dates';
-import { isFastingDay, stageFor } from '../src/lib/fasting';
+import { activeFastingDays, isFastingDay, stageFor } from '../src/lib/fasting';
 import { searchGeneric, genericFoods } from '../src/lib/genericFoods';
+import { goalsFor } from '../src/lib/goals';
 import { ALL_KEYS, _dicts, translate } from '../src/lib/i18n';
-import { bmr, dailyKcalGoal, macroGrams, per100From, scaleNutrients, sumEntries, defaultWaterGoal } from '../src/lib/nutrition';
-import { foodFromOFF } from '../src/lib/openFoodFacts';
-import type { AISettings, Profile } from '../src/lib/types';
+import { migrateState, OLD_LOCAL_DEFAULT_URL } from '../src/lib/migrations';
+import {
+  bmr,
+  dailyKcalGoal,
+  goalStatus,
+  isAdult,
+  macroGrams,
+  minHealthyWeight,
+  per100From,
+  scaleNutrients,
+  sumEntries,
+  defaultWaterGoal,
+  tdee,
+} from '../src/lib/nutrition';
+import { _resetSearchState, foodFromOFF, HttpError, isBarcode, RateLimitedError, searchOFF } from '../src/lib/openFoodFacts';
+import { createShardedStorage, memoryStore } from '../src/lib/persistStorage';
+import type { AISettings, DiaryEntry, PersistedData, Profile, ProfileDraft } from '../src/lib/types';
+import { draftProblem } from '../src/lib/validation';
 
 const profile: Profile = {
   sex: 'female',
@@ -42,7 +69,7 @@ test('daily goal: deficit, floor and gain', () => {
   assert.equal(dailyKcalGoal(profile, 72, now), 1460);
   assert.equal(dailyKcalGoal({ ...profile, paceKgPerWeek: 1 }, 72, now), 1200);
   assert.equal(dailyKcalGoal({ ...profile, goal: 'maintain', paceKgPerWeek: 0 }, 72, now), 2010);
-  assert.ok(dailyKcalGoal({ ...profile, goal: 'gain' }, 72, now) > 2010);
+  assert.ok(dailyKcalGoal({ ...profile, goal: 'gain', targetWeightKg: 80 }, 72, now) > 2010);
 });
 
 test('macro grams from split', () => {
@@ -233,4 +260,299 @@ test('provider requests are shaped correctly', async () => {
   await assert.rejects(callProvider({ ...base, provider: 'openai', config: { model: 'm' }, apiKey: null }), /No API key/);
   const err = async () => new Response(JSON.stringify({ error: { message: 'invalid key' } }), { status: 401 });
   await assert.rejects(callProvider({ ...base, provider: 'openai', config: { model: 'm' }, apiKey: 'x' }, err), /HTTP 401: invalid key/);
+});
+
+/* ---------- Goals and safety limits ---------- */
+
+test('weight-loss goal never exceeds maintenance, even under the calorie floor', () => {
+  // Small, older, sedentary woman: maintenance is below the 1200 kcal floor.
+  const small: Profile = { ...profile, birthYear: 1946, heightCm: 150, startWeightKg: 50, targetWeightKg: 46, activity: 'sedentary' };
+  const maintenance = tdee(small, 50, now);
+  assert.ok(maintenance < 1200, `test setup: maintenance ${maintenance}`);
+  const goal = dailyKcalGoal(small, 50, now);
+  assert.ok(goal <= Math.round(maintenance / 10) * 10, `goal ${goal} above maintenance ${maintenance}`);
+});
+
+test('reaching the target switches to maintenance', () => {
+  const maintain = dailyKcalGoal({ ...profile, goal: 'maintain' }, 65, now);
+  assert.equal(goalStatus(profile, 65, now), 'reached');
+  assert.equal(dailyKcalGoal(profile, 65, now), maintain);
+  assert.equal(dailyKcalGoal(profile, 64, now), dailyKcalGoal({ ...profile, goal: 'maintain' }, 64, now));
+  const gainer: Profile = { ...profile, goal: 'gain', targetWeightKg: 75 };
+  assert.equal(goalStatus(gainer, 75, now), 'reached');
+  assert.equal(dailyKcalGoal(gainer, 76, now), dailyKcalGoal({ ...gainer, goal: 'maintain' }, 76, now));
+  assert.equal(goalStatus(gainer, 74, now), 'active');
+});
+
+test('minors and underweight users get no deficit', () => {
+  const teen: Profile = { ...profile, birthYear: 2011 };
+  assert.equal(isAdult(2011, now), false);
+  assert.equal(isAdult(2008, now), true);
+  assert.equal(goalStatus(teen, 72, now), 'minor');
+  assert.equal(dailyKcalGoal(teen, 72, now), dailyKcalGoal({ ...teen, goal: 'maintain' }, 72, now));
+  // 168 cm, 50 kg -> BMI 17.7
+  assert.equal(goalStatus({ ...profile, targetWeightKg: 45 }, 50, now), 'underweight');
+  // no fasting days for minors either
+  assert.equal(isFastingDay(teen, '2026-10-12', now), false);
+  const g = goalsFor(teen, [], '2026-10-12', now);
+  assert.equal(g.fastDay, false);
+  assert.equal(g.status, 'minor');
+});
+
+test('profile validation: age, healthy target, ranges', () => {
+  const draft: ProfileDraft = {
+    goal: 'lose',
+    sex: 'female',
+    birthYear: 1996,
+    heightCm: 170,
+    startWeightKg: 75,
+    targetWeightKg: 68,
+    activity: 'light',
+    paceKgPerWeek: 0.5,
+  };
+  assert.equal(draftProblem(draft, now), null);
+  assert.equal(draftProblem({ ...draft, birthYear: 2011 }, now)?.key, 'err_minor_lose');
+  assert.equal(draftProblem({ ...draft, birthYear: 2011, goal: 'maintain' }, now), null);
+  assert.equal(minHealthyWeight(170), 53.5);
+  assert.deepEqual(draftProblem({ ...draft, targetWeightKg: 50 }, now), { key: 'err_target_bmi', params: { kg: 53.5 } });
+  assert.equal(draftProblem({ ...draft, targetWeightKg: 53.5 }, now), null);
+  assert.equal(draftProblem({ ...draft, startWeightKg: 50, targetWeightKg: 48 }, now)?.key, 'err_underweight_lose');
+  assert.equal(draftProblem({ ...draft, startWeightKg: 34 }, now)?.key, 'err_weight');
+  assert.equal(draftProblem({ ...draft, targetWeightKg: 80 }, now)?.key, 'err_target_lose');
+  assert.equal(draftProblem({ ...draft, goal: 'gain', targetWeightKg: 70 }, now)?.key, 'err_target_gain');
+});
+
+test('6:1 keeps a single fasting day, also with two stored', () => {
+  const sixOne = { ...profile, fastingPlanId: '6:1', fastingDays: [1, 4] };
+  assert.deepEqual(activeFastingDays(sixOne), [4]);
+  assert.equal(isFastingDay(sixOne, '2026-10-12', now), false); // Monday no longer counts
+  assert.equal(isFastingDay(sixOne, '2026-10-15', now), true); // Thursday
+  assert.deepEqual(activeFastingDays({ ...profile, fastingDays: [1, 1, 4] }), [1, 4]);
+  assert.deepEqual(activeFastingDays({ ...profile, fastingPlanId: '16:8' }), []);
+});
+
+/* ---------- AI and network ---------- */
+
+test('server addresses: http only on the local network', () => {
+  for (const h of ['localhost', '127.0.0.1', '10.1.2.3', '192.168.178.20', '172.16.0.1', '172.31.255.1', 'pc.local', 'nas.lan', '100.101.102.103', '[::1]', '[fd12::1]']) {
+    assert.equal(isPrivateHost(h), true, h);
+  }
+  for (const h of ['example.com', '8.8.8.8', '172.32.0.1', '192.169.1.1', '100.128.0.1', 'local.example.com']) {
+    assert.equal(isPrivateHost(h), false, h);
+  }
+  assert.equal(serverUrlProblem(''), 'empty');
+  assert.equal(serverUrlProblem('192.168.1.2:11434'), 'invalid');
+  assert.equal(serverUrlProblem('ftp://pc.local/v1'), 'invalid');
+  assert.equal(serverUrlProblem('http://192.168.1.2:11434/v1'), null);
+  assert.equal(serverUrlProblem('https://api.example.com/v1'), null);
+  assert.equal(serverUrlProblem('http://api.example.com/v1'), 'insecure');
+  assert.equal(DEFAULT_AI_SETTINGS.providers.local.baseUrl, '');
+});
+
+test('API keys are never sent over public http', async () => {
+  let called = false;
+  const fake = async () => {
+    called = true;
+    return new Response('{}', { status: 200 });
+  };
+  await assert.rejects(
+    callProvider({ provider: 'openai', config: { model: 'm', baseUrl: 'http://proxy.example.com/v1' }, apiKey: 'sk', prompt: 'p' }, fake),
+    /plain http/,
+  );
+  await assert.rejects(callProvider({ provider: 'local', config: { model: 'm', baseUrl: '' }, apiKey: null, prompt: 'p' }, fake), /No server address/);
+  assert.equal(called, false);
+  // empty OpenAI address falls back to the official https endpoint
+  const seen: string[] = [];
+  await callProvider({ provider: 'openai', config: { model: 'm', baseUrl: '' }, apiKey: 'sk', prompt: 'p' }, async (url) => {
+    seen.push(url);
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 });
+  });
+  assert.deepEqual(seen, ['https://api.openai.com/v1/chat/completions']);
+});
+
+test('cancelling an analysis stops without trying the fallback', async () => {
+  const ctrl = new AbortController();
+  const calls: string[] = [];
+  const run = analyzeMeal('b64', settings('local', 'gemini'), async () => 'k', 'en', undefined, async (r) => {
+    calls.push(r.provider);
+    ctrl.abort();
+    throw new Error('aborted');
+  }, ctrl.signal);
+  await assert.rejects(run, new RegExp(CANCELLED));
+  assert.deepEqual(calls, ['local']);
+});
+
+test('implausible AI values are dropped or flagged', () => {
+  const r = parseMealJson(
+    JSON.stringify({
+      items: [
+        { name: 'Huge', grams: 9000, kcal: 9000, confidence: 0.9 },
+        { name: 'Impossible', grams: 100, kcal: 2000, confidence: 0.9 },
+        { name: 'Heavy macros', grams: 100, kcal: 300, protein: 100, carbs: 100, fat: 0, confidence: 0.9 },
+        { name: 'Too few kcal', grams: 200, kcal: 50, protein: 20, carbs: 60, fat: 20, confidence: 0.9 },
+        { name: 'Beer', grams: 500, kcal: 215, protein: 2.5, carbs: 18, fat: 0, confidence: 0.9 },
+      ],
+      confidence: 0.9,
+    }),
+  );
+  assert.deepEqual(r.items.map((i) => i.name), ['Too few kcal', 'Beer']);
+  assert.equal(r.items[0].kcal, 20 * 4 + 60 * 4 + 20 * 9);
+  assert.equal(r.items[0].confidence, 0.3);
+  assert.equal(r.items[1].kcal, 215); // alcohol: more kcal than macros is fine
+  assert.equal(r.confidence, 0.3); // overall drops so the fallback is asked
+});
+
+test('implausible Open Food Facts values are rejected', () => {
+  const base = { code: '3', product_name: 'P' };
+  // kJ typed into the kcal field, correct kJ available
+  const fixed = foodFromOFF({ ...base, nutriments: { 'energy-kcal_100g': 1500, 'energy-kj_100g': 1500 } }, 'en')!;
+  assert.equal(Math.round(fixed.per100.kcal), 359);
+  assert.equal(foodFromOFF({ ...base, nutriments: { 'energy-kcal_100g': 2500 } }, 'en'), undefined);
+  assert.equal(foodFromOFF({ ...base, nutriments: { 'energy-kcal_100g': 300, proteins_100g: 80, carbohydrates_100g: 80 } }, 'en'), undefined);
+  const neg = foodFromOFF({ ...base, nutriments: { 'energy-kcal_100g': 100, fat_100g: -3, sugars_100g: 400 } }, 'en')!;
+  assert.equal(neg.per100.fat, 0);
+  assert.equal(neg.per100.sugar, undefined);
+});
+
+test('product search: cached, rate-limited, no fallback after 429', async () => {
+  _resetSearchState();
+  const urls: string[] = [];
+  const ok = async (url: string) => {
+    urls.push(url);
+    return new Response(JSON.stringify({ hits: [{ code: '1', product_name: 'Milk', nutriments: { 'energy-kcal_100g': 64 } }] }), { status: 200 });
+  };
+  const t0 = 1_000_000;
+  const first = await searchOFF('Milk', 'en', 25, ok, t0);
+  assert.equal(first.length, 1);
+  await searchOFF(' milk ', 'en', 25, ok, t0 + 1000);
+  assert.equal(urls.length, 1, 'second identical search should come from the cache');
+  for (let i = 0; i < 7; i++) await searchOFF(`q${i}`, 'en', 25, ok, t0 + 2000);
+  await assert.rejects(searchOFF('one too many', 'en', 25, ok, t0 + 3000), RateLimitedError);
+  await searchOFF('later', 'en', 25, ok, t0 + 70_000);
+
+  _resetSearchState();
+  const limited: string[] = [];
+  await assert.rejects(
+    searchOFF('x', 'en', 25, async (url) => {
+      limited.push(url);
+      return new Response('', { status: 429 });
+    }, t0),
+    (e: unknown) => e instanceof HttpError && e.status === 429,
+  );
+  assert.equal(limited.length, 1, 'a 429 must not trigger the second endpoint');
+
+  _resetSearchState();
+  const down: string[] = [];
+  const res = await searchOFF('y', 'en', 25, async (url) => {
+    down.push(url);
+    if (url.includes('search.openfoodfacts.org')) return new Response('', { status: 503 });
+    return new Response(JSON.stringify({ products: [] }), { status: 200 });
+  }, t0);
+  assert.deepEqual(res, []);
+  assert.equal(down.length, 2);
+  assert.equal(isBarcode('4000417025005'), true);
+  assert.equal(isBarcode('12345'), false);
+  assert.equal(isBarcode('milk 1'), false);
+});
+
+/* ---------- Storage, migration, backup ---------- */
+
+const entry = (id: string, date: string): DiaryEntry => ({
+  id,
+  date,
+  meal: 'lunch',
+  grams: 100,
+  createdAt: 1,
+  food: { id: 'f', source: 'custom', name: 'Food', per100: { kcal: 100, protein: 1, carbs: 1, fat: 1 }, servings: [] },
+});
+
+test('storage splits entries by month and writes only what changed', async () => {
+  type S = { entries: DiaryEntry[]; water: Record<string, number> };
+  // Legacy layout: everything in one value.
+  const legacy = { state: { entries: [entry('a', '2026-09-30'), entry('b', '2026-10-01')], water: { '2026-10-01': 500 } }, version: 1 };
+  const kv = memoryStore({ app: JSON.stringify(legacy) });
+  const storage = createShardedStorage<S>(kv);
+
+  const loaded = await storage.getItem('app');
+  assert.deepEqual(loaded?.state.entries.map((e) => e.id), ['a', 'b']);
+  assert.equal(loaded?.version, 1);
+
+  await storage.setItem('app', { state: loaded!.state, version: 2 });
+  assert.deepEqual([...kv.data.keys()].sort(), ['app', 'app:entries:2026-09', 'app:entries:2026-10']);
+  assert.equal(JSON.parse(kv.data.get('app')!).state.entries, undefined);
+
+  // Adding an October entry rewrites October only.
+  let writes: string[] = [];
+  const spy = { ...kv, multiSet: async (pairs: [string, string][]) => { writes = pairs.map(([k]) => k); await kv.multiSet(pairs); } };
+  const storage2 = createShardedStorage<S>(spy);
+  const s2 = (await storage2.getItem('app'))!;
+  await storage2.setItem('app', { state: { ...s2.state, entries: [...s2.state.entries, entry('c', '2026-10-12')] }, version: 2 });
+  assert.deepEqual(writes, ['app:entries:2026-10']);
+
+  // Removing the only September entry removes that value.
+  await storage2.setItem('app', { state: { ...s2.state, entries: [entry('b', '2026-10-01')] }, version: 2 });
+  assert.equal(kv.data.has('app:entries:2026-09'), false);
+
+  // A fresh reader sees exactly the stored entries (legacy copy ignored once months exist).
+  const reread = await createShardedStorage<S>(kv).getItem('app');
+  assert.deepEqual(reread?.state.entries.map((e) => e.id), ['b']);
+  assert.deepEqual(reread?.state.water, { '2026-10-01': 500 });
+});
+
+test('storage never writes before a successful read', async () => {
+  const kv = memoryStore({ app: '{not json' });
+  const storage = createShardedStorage<{ entries: DiaryEntry[] }>(kv);
+  await assert.rejects(storage.getItem('app'));
+  await storage.setItem('app', { state: { entries: [] }, version: 2 });
+  assert.equal(kv.data.get('app'), '{not json', 'unreadable data must not be overwritten');
+});
+
+test('migration clears the old hard-coded local server address', () => {
+  const v1 = (primary: AISettings['primary']) => ({
+    ai: { ...DEFAULT_AI_SETTINGS, primary, providers: { ...DEFAULT_AI_SETTINGS.providers, local: { model: 'm', baseUrl: OLD_LOCAL_DEFAULT_URL } } },
+  });
+  assert.equal((migrateState(v1('gemini'), 1).ai as AISettings).providers.local.baseUrl, '');
+  assert.equal((migrateState(v1('local'), 1).ai as AISettings).providers.local.baseUrl, OLD_LOCAL_DEFAULT_URL);
+  assert.equal((migrateState(v1('gemini'), 2).ai as AISettings).providers.local.baseUrl, OLD_LOCAL_DEFAULT_URL);
+});
+
+test('backup round trip, old exports, damaged files', () => {
+  const data: PersistedData = {
+    profile,
+    language: 'de',
+    entries: [entry('a', '2026-10-01')],
+    customFoods: [],
+    recentFoods: [],
+    water: { '2026-10-01': 750 },
+    weights: [{ date: '2026-10-01', kg: 71 }],
+    fastingActive: null,
+    fastingHistory: [{ id: 'f1', start: 1, end: 2, targetHours: 16, planId: '16:8' }],
+    ai: DEFAULT_AI_SETTINGS,
+  };
+  const { backup, skipped } = parseBackup(JSON.stringify(makeBackup(data, now)));
+  assert.equal(skipped, 0);
+  assert.deepEqual(backup.entries, data.entries);
+  assert.deepEqual(backup.water, data.water);
+  assert.equal(backup.language, 'de');
+
+  // Export from version 1 (no format, no recentFoods), one broken entry
+  const old = { app: 'OpenPlate', exportedAt: 'x', profile, entries: [entry('a', '2026-10-01'), { id: 'bad' }], water: {}, weights: [], fastingHistory: [] };
+  const parsed = parseBackup(JSON.stringify(old));
+  assert.equal(parsed.skipped, 1);
+  assert.deepEqual(parsed.backup.recentFoods, []);
+
+  assert.throws(() => parseBackup('nope'), (e: unknown) => e instanceof BackupError && e.code === 'not_json');
+  assert.throws(() => parseBackup('{"app":"Other"}'), (e: unknown) => e instanceof BackupError && e.code === 'not_openplate');
+  assert.throws(() => parseBackup('{"app":"OpenPlate","entries":5}'), (e: unknown) => e instanceof BackupError && e.code === 'invalid');
+  assert.throws(() => parseBackup('{"app":"OpenPlate","profile":{"sex":"x"}}'), (e: unknown) => e instanceof BackupError && e.code === 'invalid');
+});
+
+test('goals use each day’s own weight', () => {
+  const weights = [
+    { date: '2026-10-01', kg: 70 },
+    { date: '2026-10-10', kg: 64 },
+  ];
+  assert.equal(goalsFor(profile, weights, '2026-09-30', now).weight, 72);
+  assert.equal(goalsFor(profile, weights, '2026-10-05', now).weight, 70);
+  assert.equal(goalsFor(profile, weights, '2026-10-11', now).status, 'reached');
 });
