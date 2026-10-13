@@ -1,0 +1,1 @@
+PWA ready in dist (base "/OpenPlate/", 53 files precached, cache a5e86974b9cc)

@@ -1,0 +1,20 @@
+The following packages should be updated for best compatibility with the installed expo version:
+  react-native@0.81.4 - expected version: 0.81.5
+Your project may not work correctly until you install the expected versions of the packages.
+› Installing 1 SDK 54.0.0 compatible native module using npm
+> npm install
+
+added 1 package, removed 5 packages, changed 6 packages, and audited 791 packages in 6s
+
+88 packages are looking for funding
+  run `npm fund` for details
+
+40 vulnerabilities (17 moderate, 23 high)
+
+To address issues that do not require attention, run:
+  npm audit fix
+
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+
+Run `npm audit` for details.

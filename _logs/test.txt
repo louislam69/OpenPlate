@@ -1,0 +1,117 @@
+
+> openplate@1.0.0 test
+> tsc -p tests/tsconfig.json && node --test .test-build/tests/logic.test.js
+
+TAP version 13
+# Subtest: BMR follows Mifflin-St Jeor
+ok 1 - BMR follows Mifflin-St Jeor
+  ---
+  duration_ms: 0.866898
+  type: 'test'
+  ...
+# Subtest: daily goal: deficit, floor and gain
+ok 2 - daily goal: deficit, floor and gain
+  ---
+  duration_ms: 0.268078
+  type: 'test'
+  ...
+# Subtest: macro grams from split
+ok 3 - macro grams from split
+  ---
+  duration_ms: 0.601369
+  type: 'test'
+  ...
+# Subtest: scaling and per-100 conversion are inverse
+ok 4 - scaling and per-100 conversion are inverse
+  ---
+  duration_ms: 0.208702
+  type: 'test'
+  ...
+# Subtest: sumEntries adds diary entries
+ok 5 - sumEntries adds diary entries
+  ---
+  duration_ms: 1.303037
+  type: 'test'
+  ...
+# Subtest: water goal is bounded
+ok 6 - water goal is bounded
+  ---
+  duration_ms: 0.117575
+  type: 'test'
+  ...
+# Subtest: dates
+ok 7 - dates
+  ---
+  duration_ms: 0.436275
+  type: 'test'
+  ...
+# Subtest: fasting days and stages
+ok 8 - fasting days and stages
+  ---
+  duration_ms: 0.179802
+  type: 'test'
+  ...
+# Subtest: generic search finds both languages and umlauts
+ok 9 - generic search finds both languages and umlauts
+  ---
+  duration_ms: 2.466215
+  type: 'test'
+  ...
+# Subtest: translations: German has every key and placeholders match
+ok 10 - translations: German has every key and placeholders match
+  ---
+  duration_ms: 0.83197
+  type: 'test'
+  ...
+# Subtest: Open Food Facts mapping
+ok 11 - Open Food Facts mapping
+  ---
+  duration_ms: 0.581543
+  type: 'test'
+  ...
+# Subtest: AI JSON parsing is tolerant
+ok 12 - AI JSON parsing is tolerant
+  ---
+  duration_ms: 0.552444
+  type: 'test'
+  ...
+# Subtest: fallback: confident primary is used alone
+ok 13 - fallback: confident primary is used alone
+  ---
+  duration_ms: 0.391466
+  type: 'test'
+  ...
+# Subtest: fallback: unsure primary asks fallback and keeps better answer
+ok 14 - fallback: unsure primary asks fallback and keeps better answer
+  ---
+  duration_ms: 0.189469
+  type: 'test'
+  ...
+# Subtest: fallback: failing primary falls back; both failing throws
+ok 15 - fallback: failing primary falls back; both failing throws
+  ---
+  duration_ms: 0.671269
+  type: 'test'
+  ...
+# Subtest: provider requests are shaped correctly
+ok 16 - provider requests are shaped correctly
+  ---
+  duration_ms: 18.454235
+  type: 'test'
+  ...
+# Subtest: backup round-trips and drops invalid rows
+ok 17 - backup round-trips and drops invalid rows
+  ---
+  duration_ms: 7.416803
+  type: 'test'
+  ...
+1..17
+# tests 17
+# suites 0
+# pass 17
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 96.83642
+exit 0

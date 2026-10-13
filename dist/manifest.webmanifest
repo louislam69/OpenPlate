@@ -1,0 +1,30 @@
+{
+  "name": "OpenPlate",
+  "short_name": "OpenPlate",
+  "description": "Free, open-source calorie tracker. All data stays on your device.",
+  "id": "/OpenPlate/",
+  "start_url": "/OpenPlate/",
+  "scope": "/OpenPlate/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#EEF2E5",
+  "theme_color": "#EEF2E5",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
